@@ -163,127 +163,157 @@ def transform_and_expand(folder_path, De_Para_file_path, output_file_path):
     # Update De_Para file with the DataFrame
     if De_Para_file_path and os.path.exists(De_Para_file_path):
         Update_De_Para(De_Para_file_path, df)
+        
     else:
         print("De_Para file not selected or doesn't exist. Skipping De_Para update.")
     
     print(f"Final file saved to: {output_file_path}")
 
-def Update_De_Para(De_Para_file_path, df):
-    try:
-        # Load the existing De_Para file into a DataFrame
-        De_Para = pd.read_excel(De_Para_file_path, sheet_name="Coded")
-        
-        # Remove duplicates from Griglia Italiano and Griglia Inglês columns
-        De_Para = De_Para.drop_duplicates(subset=['Griglia Italiano', 'Griglia Inglês'])
-        
-        print(f"Processing {len(De_Para)} rows from De_Para file...")
-        
-        # Create a dictionary to store results by unique combination
-        results_dict = {}
-        
-        # Get unique file models from the data
-        unique_file_models = df['File_Model'].unique()
-        print(f"Found file models: {list(unique_file_models)}")
-        
-        # Process each row in the De_Para file
-        for index, row in De_Para.iterrows():
-            italiano_value = str(row['Griglia Italiano']).strip() if pd.notna(row['Griglia Italiano']) else ""
-            ingles_value = str(row['Griglia Inglês']).strip() if pd.notna(row['Griglia Inglês']) else ""
-            
-            print(f"Processing De_Para row {index + 1}: Italiano='{italiano_value}', Inglês='{ingles_value}'")
-            
-            # Process each file model
-            for file_model in unique_file_models:
-                model_df = df[df['File_Model'] == file_model]
-                
-                # Find matches for Italiano
-                italiano_matches = pd.DataFrame()
-                if italiano_value:
-                    italiano_matches = model_df[model_df['Packet'].str.strip().str.lower() == italiano_value.lower()]
-                
-                # Find matches for Inglês
-                ingles_matches = pd.DataFrame()
-                if ingles_value:
-                    ingles_matches = model_df[model_df['Packet'].str.strip().str.lower() == ingles_value.lower()]
-                
-                # Get unique multivalues from both matches
-                all_multivalues = set()
-                
-                if not italiano_matches.empty:
-                    all_multivalues.update(italiano_matches['Multivalues'].unique())
-                
-                if not ingles_matches.empty:
-                    all_multivalues.update(ingles_matches['Multivalues'].unique())
-                
-                # Create entries for each unique multivalue
-                for multivalue in all_multivalues:
-                    if not multivalue or str(multivalue).strip() == '':
-                        continue
-                    
-                    key = (multivalue, italiano_value, ingles_value, file_model)
-                    
-                    if key not in results_dict:
-                        # Initialize the result row
-                        results_dict[key] = {
-                            'Multivalues': multivalue,
-                            'Griglia Italiano': italiano_value,
-                            'Griglia Inglês': ingles_value,
-                            'Model': file_model,
-                            'Resp.1': '',
-                            'Resp.2': ''
-                        }
-                    
-                    # Check if this multivalue appears in Italiano matches
-                    italiano_has_multivalue = not italiano_matches.empty and \
-                                            any(italiano_matches['Multivalues'] == multivalue)
-                    
-                    # Check if this multivalue appears in Inglês matches
-                    ingles_has_multivalue = not ingles_matches.empty and \
-                                          any(ingles_matches['Multivalues'] == multivalue)
-                    
-                    # Set Resp.1 if found in Italiano matches
-                    if italiano_has_multivalue:
-                        results_dict[key]['Resp.1'] = multivalue
-                    
-                    # Set Resp.2 if found in Inglês matches
-                    if ingles_has_multivalue:
-                        results_dict[key]['Resp.2'] = multivalue
-        
-        # Convert results dictionary to list
-        flattened_results = list(results_dict.values())
-        
-        # Create DataFrame from flattened results
-        if flattened_results:
-            result_df = pd.DataFrame(flattened_results)
-            
-            # Sort by Model, then by Multivalues for better organization
-            result_df = result_df.sort_values(['Model', 'Multivalues'])
-            
-            print(f"Created result DataFrame with {len(result_df)} rows")
-            print("\nSample of results:")
-            print(result_df.head(10).to_string(index=False))
-            
-            try:
-                # Try to save to the same file with a new sheet
-                with pd.ExcelWriter(De_Para_file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-                    # Write the new data
-                    result_df.to_excel(writer, sheet_name='tb_de_para', index=False)
-                    print(f"Results saved to '{De_Para_file_path}' in sheet 'tb_de_para'")
-            except Exception as e:
-                # If there's an error (like file is open), save to a new file
-                output_path = os.path.splitext(De_Para_file_path)[0] + "_tb_de_para.xlsx"
-                result_df.to_excel(output_path, sheet_name='tb_de_para', index=False)
-                print(f"Could not update original file: {e}")
-                print(f"Results saved to: {output_path}")
-            
-            return result_df
-        else:
-            print("No matching results found.")
-            return pd.DataFrame()
+
+
+def Update_De_Para(de_para_file_path, df):
+    """
+    Finds new unique multivalues, builds their corresponding records, and
+    updates the 'tb_de_para' sheet in the specified Excel file.
     
+    This is the complete, corrected workflow with pre-filtering and a final check.
+    """
+    try:
+        # --- Step 1: Load All Necessary Data ---
+        de_para_mapping = pd.read_excel(de_para_file_path, sheet_name="Coded")
+        de_para_mapping = de_para_mapping.drop_duplicates(subset=['Griglia Italiano', 'Griglia Inglês'])
+        de_para_mapping = de_para_mapping.dropna(subset=['Griglia Italiano', 'Griglia Inglês'], how='all')
+
+        try:
+            # Correctly loading the target sheet to be updated
+            tb_de_para = pd.read_excel(de_para_file_path, sheet_name="Coded")
+        except ValueError:
+            print("Sheet 'tb_de_para' not found. A new one will be created.")
+            tb_de_para = pd.DataFrame(columns=['MultiValues', 'Griglia Italiano', 'Griglia Inglês', 'Model', 'Resp.1', 'Resp.2'])
+
+        # --- Step 2: Pre-filter input 'df' based on valid 'Griglia' values ---
+        print("Pre-filtering input data against 'Coded' sheet...")
+        valid_ita = de_para_mapping['Griglia Italiano'].dropna().astype(str).str.lower().str.strip()
+        valid_eng = de_para_mapping['Griglia Inglês'].dropna().astype(str).str.lower().str.strip()
+        valid_packets = set(valid_ita) | set(valid_eng)
+
+        df['packet_norm_for_filter'] = df['Packet'].astype(str).str.lower().str.strip()
+        
+        original_row_count = len(df)
+        df = df[df['packet_norm_for_filter'].isin(valid_packets)].copy()
+        df.drop(columns=['packet_norm_for_filter'], inplace=True)
+
+        print(f"SUCCESS. Kept {len(df)} of {original_row_count} rows that match a 'Griglia' value.")
+
+        if df.empty:
+            print("No rows remained after pre-filtering. No updates to perform.")
+            return tb_de_para
+
+        # --- Step 3: Identify New Multivalues from the pre-filtered data ---
+        resp1_clean = tb_de_para['Resp.1'].dropna().astype(str).str.lower().str.strip()
+        resp2_clean = tb_de_para['Resp.2'].dropna().astype(str).str.lower().str.strip()
+        existing_values = set(resp1_clean) | set(resp2_clean)
+        
+
+        df['multivalues_clean'] = df['Multivalues'].dropna().astype(str).str.lower().str.strip()
+        
+        rows_with_new_data = df[~df['multivalues_clean'].isin(existing_values)].copy()
+        
+        rows_with_new_data.drop(columns=['multivalues_clean'], inplace=True)
+        df.drop(columns=['multivalues_clean'], inplace=True)
+
+        if rows_with_new_data.empty:
+            print("SUCCESS. No new values were found to add.")
+            return tb_de_para
+
+        print(f"SUCCESS. Identified {len(rows_with_new_data['Multivalues'].unique())} new unique values to process and add.")
+
+        # --- Step 4: Build New Records by Matching with 'Coded' Sheet ---
+        rows_with_new_data['packet_norm'] = rows_with_new_data['Packet'].str.strip().str.lower()
+        de_para_mapping['ita_norm'] = de_para_mapping['Griglia Italiano'].str.strip().str.lower()
+        de_para_mapping['eng_norm'] = de_para_mapping['Griglia Inglês'].str.strip().str.lower()
+
+        merged_ita = pd.merge(rows_with_new_data, de_para_mapping, left_on='packet_norm', right_on='ita_norm', how='inner')
+        merged_ita['Resp.1'] = merged_ita['Multivalues']
+        merged_ita['Resp.2'] = pd.NA
+
+        merged_eng = pd.merge(rows_with_new_data, de_para_mapping, left_on='packet_norm', right_on='eng_norm', how='inner')
+        merged_eng['Resp.1'] = pd.NA
+        merged_eng['Resp.2'] = merged_eng['Multivalues']
+
+        combined_new = pd.concat([merged_ita, merged_eng], ignore_index=True)
+
+        if combined_new.empty:
+            print("New values found, but they did not match any entry in the 'Coded' sheet.")
+            return tb_de_para
+
+        new_records = combined_new.groupby(
+            ['MultiValues', 'Griglia Italiano', 'Griglia Inglês', 'File_Model'], as_index=False
+        ).agg({
+            'Resp.1': 'first', 'Resp.2': 'first'
+        }).fillna('')
+
+        new_records = new_records.rename(columns={'File_Model': 'Model'})
+        # Clean up whitespace and normalize nulls
+        new_records['Resp.1'] = new_records['Resp.1'].astype(str).str.strip()
+        new_records['Resp.2'] = new_records['Resp.2'].astype(str).str.strip()
+
+        # Filter: Keep only rows where either Resp.1 or Resp.2 is not empty
+        filtered_records = new_records[
+            (new_records['Resp.1'] != '') |
+            (new_records['Resp.2'] != '')
+        ]
+
+        final_new_records = filtered_records[tb_de_para.columns].drop_duplicates(subset=['MultiValues'])
+       
+
+        print(f"Generated {len(final_new_records)} records before final check.")
+
+        # --- Step 5: Final check to remove values that already exist ---
+        # This ensures a MultiValue isn't added if it's already a Resp.1 or Resp.2 value anywhere.
+        def is_value_existing(value):
+            return any(ev in value for ev in existing_values)
+
+        # Step 3: Apply it to the cleaned column
+        if not final_new_records.empty:
+            final_new_records['multivalues_clean_final'] = final_new_records['Resp.1'].astype(str).str.lower().str.strip()
+
+            original_count = len(final_new_records)
+
+            # Keep only rows where the value is NOT a substring match with any existing value
+            final_new_records = final_new_records[~final_new_records['multivalues_clean_final'].apply(is_value_existing)].copy()
+
+            final_new_records.drop(columns=['multivalues_clean_final'], inplace=True)
+            print(final_new_records)
+            print(f"After final check, {len(final_new_records)} of {original_count} records are truly new.")
+                
+        if final_new_records.empty:
+            print("All generated records were found to already exist. No new rows will be added.")
+            return tb_de_para
+            
+        print(f"Adding {len(final_new_records)} truly new records to the sheet.")
+
+        # --- Step 6: Append Final New Records and SAVE to Excel ---
+        updated_tb_de_para = final_new_records.drop(columns=['Resp.2'])
+
+        try:
+            with pd.ExcelWriter(de_para_file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                updated_tb_de_para.to_excel(writer, sheet_name='tb_de_para', index=False)
+            print(f"✅ Successfully updated '{de_para_file_path}' with {len(final_new_records)} new rows.")
+        except Exception as e:
+            output_path = os.path.splitext(de_para_file_path)[0] + "_updated_tb_de_para.xlsx"
+            updated_tb_de_para.to_excel(output_path, sheet_name='tb_de_para', index=False)
+            print(f"Could not write to the original file (Error: {e}). Results saved to: {output_path}")
+
+        return updated_tb_de_para
+
+    except FileNotFoundError:
+        print(f"Error: The file '{de_para_file_path}' was not found.")
+        return None
     except Exception as e:
-        print(f"Error updating De_Para file: {e}")
-        return pd.DataFrame()
+        print(f"An unexpected error occurred: {e}")
+        return None
+
 
 # === Resource path function ===
 def resource_path(relative_path):
@@ -441,32 +471,6 @@ def clear_status():
 
 tk.Button(status_frame, text="Clear Status", command=clear_status).pack(pady=5)
 
-# Add instructions
-instructions_frame = tk.Frame(root)
-instructions_frame.pack(pady=10, padx=10, fill="x")
-
-instructions_text = """
-Instructions:
-1. Select the input folder containing Excel files with 'Griglia Mondo - Volumi' or 'Grid World - Volume' sheets
-2. Optionally select a De_Para file (must contain a 'Coded' sheet with 'Griglia Italiano' and 'Griglia Inglês' columns)
-3. Select an output folder where the processed files will be saved
-4. Click 'Run Processing' to start the transformation
-5. The process will create an 'Expanded_Mapped_File.xlsx' and update the De_Para file if provided
-
-Note: The model code will be extracted from the first 3 characters of each Excel filename
-Example: '2261-2025-eGrip TORO MY26 v7 17Fev2025 (12).xlsx' → Model: '226'
-
-The tb_de_para sheet will contain:
-- Multivalues: The corresponding values from the Griglia data
-- Griglia Italiano: Italian terms from the De_Para file
-- Griglia Inglês: English terms from the De_Para file  
-- Model: The 3-character code extracted from filename
-- Resp.1: Multivalues when matched via Griglia Italiano
-- Resp.2: Multivalues when matched via Griglia Inglês
-"""
-
-tk.Label(instructions_frame, text=instructions_text, justify="left", wraplength=600, 
-         font=("Helvetica", 9)).pack(anchor="w")
 
 # Center the window
 root.update_idletasks()
